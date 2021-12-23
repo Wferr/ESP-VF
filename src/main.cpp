@@ -4,6 +4,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266MDNS.h>
 #include <WiFiUdp.h>
+#include <MQTT.h>
 
 ///////////////////////////////////////////////////////////////////
 //                           Config                              //
@@ -14,18 +15,56 @@ String SSID = "SSID";
 String PASSWORD = "PASSWORD";
 String OTA_PASSWORD = "testing123";
 String TIMEZONE = "America/Los_Angeles";
+boolean MQTT_ENABLED = true; // Enable MQTT
+char *MQTT_BROKER = "192.168.1.4";
+char *MQTT_USERNAME = "mqtt";
+char *MQTT_PASSWORD = "realsecurepassword";
 
 // Defines
 Timezone myTZ;
 bool carrots[20];
+int currentBrightness = 0;
 int dispDelay = 500; // Delay between display updates (microseconds)
 
+WiFiClient net;
+MQTTClient client;
+
 void setBrightness(int brightness)
-{                                  // 0-100 in steps of 20?
-  Serial.write(0x04);              // DIM Command
-  delayMicroseconds(dispDelay);    // Delay between commands
-  Serial.write(0x00 + brightness); // Brightness Command
-  delayMicroseconds(dispDelay);    // Delay between commands
+{
+  Serial.write(0x04);           // DIM Command
+  delayMicroseconds(dispDelay); // Delay between commands
+  // Convert 0-100 to 5 steps
+  if (brightness >= 100)
+  {
+    currentBrightness = 100;
+    Serial.write(0xFF); // Brightness Command 100%
+  }
+  else if (brightness >= 80)
+  {
+    currentBrightness = 80;
+    Serial.write(0x80); // Brightness Command 80%
+  }
+  else if (brightness >= 60)
+  {
+    currentBrightness = 60;
+    Serial.write(0x60); // Brightness Command 60%
+  }
+  else if (brightness >= 40)
+  {
+    currentBrightness = 40;
+    Serial.write(0x40); // Brightness Command 40%
+  }
+  else if (brightness >= 20)
+  {
+    currentBrightness = 20;
+    Serial.write(0x20); // Brightness Command 20%
+  }
+  else
+  {
+    currentBrightness = 0;
+    Serial.write(0x00); // Brightness Command 0%
+  }
+  delayMicroseconds(dispDelay); // Delay between commands
 }
 
 void updateCarrots()
@@ -95,19 +134,109 @@ void updateDisplay(String displayMessage)
 void clearDisplay()
 {
   previousMessage = ""; // Clear the previous message
-  Serial.write(0x0D); // CLR Command
+  Serial.write(0x0D);   // CLR Command
   delayMicroseconds(dispDelay);
 }
 
-void yieldBackground(){
-  ArduinoOTA.handle(); // Arduino OTA
-  events();            // ezTime Events
-  yield();             // Yield to other processes (wifi)
-}
-
-void displayTime(){
+void displayTime()
+{
   updateDisplay(myTZ.dateTime("l   M Y A h:i:s.v"));
 }
+
+// MQTT Handler
+void messageReceivedMQTT(String &topic, String &payload)
+{
+  // Parse Topic
+  if (topic.equals(HOSTNAME + "/status"))
+  {
+    client.publish(HOSTNAME + "/status", "1");
+  }
+  else if (topic.equals(HOSTNAME + "/relay/0/set"))
+  {
+    if (payload.equals("1"))
+    {
+      setBrightness(0);
+      client.publish(HOSTNAME + "/relay/0", "1");
+    }
+    else if (payload.equals("0"))
+    {
+      setBrightness(100);
+      client.publish(HOSTNAME + "/relay/0", "0");
+    }
+    else if (payload.equals("1"))
+    {
+      client.publish(HOSTNAME + "/relay/0", "1");
+    }
+  }
+  else if (topic.equals(HOSTNAME + "/brightness/set"))
+  {
+    int brightness = payload.toInt();
+    setBrightness(brightness);
+    client.publish("Panel-Badge/brightness", String(currentBrightness));
+  }
+}
+
+boolean mqttSetup = 0;
+char mqttHost[20];
+void handleMQTT()
+{
+  if (MQTT_ENABLED)
+  {
+    HOSTNAME.toCharArray(mqttHost, HOSTNAME.length());
+    if (!mqttSetup)
+    {
+      client.disconnect();
+      if (WiFi.SSID() == SSID)
+      {
+        client.begin(MQTT_BROKER, net);
+        client.onMessage(messageReceivedMQTT);
+        int i = 0;
+        while (!client.connect(mqttHost, MQTT_USERNAME, MQTT_PASSWORD))
+        {
+          delay(1000);
+          i++;
+          if (i > 5)
+          {
+            MQTT_ENABLED = false;
+            return;
+          }
+        }
+        Serial.println("Connected!");
+
+        // Publish Current Status before Subscribing
+        client.publish(HOSTNAME + "/status", "1");
+        if (currentBrightness > 0)
+        {
+          client.publish(HOSTNAME + "/relay/0", "1");
+        }
+        client.publish(HOSTNAME + "/brightness", String(currentBrightness));
+
+        client.subscribe(HOSTNAME + "/status");
+        client.subscribe(HOSTNAME + "/relay/0/set");
+        client.subscribe(HOSTNAME + "/brightness/set");
+
+        client.publish(HOSTNAME, HOSTNAME + " online!");
+        mqttSetup = true;
+      }
+      else
+      {
+        Serial.println("Wifi in AP mode! Disabling MQTT Handler");
+        MQTT_ENABLED = false;
+      }
+    }
+    else
+    {
+      client.loop();
+
+      // Reconnect to MQTT if Disconnected.
+      if (!client.connected())
+      {
+        mqttSetup = false;
+      }
+    }
+  }
+}
+
 void setup()
 {
 
@@ -194,6 +323,14 @@ void setup()
     delay(2000);
   }
   clearDisplay();
+}
+
+void yieldBackground()
+{
+  ArduinoOTA.handle(); // Arduino OTA
+  handleMQTT();        // MQTT Handler
+  events();            // ezTime Events
+  yield();             // Yield to other processes (wifi)
 }
 
 void loop()
