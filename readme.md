@@ -1,4 +1,7 @@
 # ESP VF Display
+
+[![Build](https://github.com/Wferr/ESP-VF/actions/workflows/PlatformIO_CI.yml/badge.svg)](https://github.com/Wferr/ESP-VF/actions/workflows/PlatformIO_CI.yml)
+  
   Work in progress!
 
   ## Specs
