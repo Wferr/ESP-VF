@@ -7,7 +7,7 @@
 
   ## Goals
   * Show Time (Duh)
-  * MQTT Support
+  * MQTT Support - Done
     * Brightness
     * On/Off
   * Notifications?
