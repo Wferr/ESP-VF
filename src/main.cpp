@@ -6,10 +6,19 @@
 #include <WiFiUdp.h>
 #include <MQTT.h>
 
+/* MQTT Home Assistant Setup
+light:
+  - platform: mqtt
+    name: "VF-ESP8266"
+    state_topic: "VF-ESP8266/light/status"
+    command_topic: "VF-ESP8266/light/switch"
+    brightness_state_topic: "VF-ESP8266/light/brightness"
+    brightness_command_topic: "VF-ESP8266/light/brightness/set"
+*/
 ///////////////////////////////////////////////////////////////////
 //                           Config                              //
 ///////////////////////////////////////////////////////////////////
-String VERSION = "v1.0.0"; // Spaced out to not exceed this length
+String VERSION = "v1.0.1"; // Spaced out to not exceed this length
 String HOSTNAME = "VF-ESP8266";
 String SSID = "SSID";
 String PASSWORD = "PASSWORD";
@@ -24,6 +33,7 @@ char *MQTT_PASSWORD = "realsecurepassword";
 Timezone myTZ;
 bool carrots[20];
 int currentBrightness = 0;
+int lastBrightness = 0;
 int dispDelay = 500; // Delay between display updates (microseconds)
 
 WiFiClient net;
@@ -63,6 +73,10 @@ void setBrightness(int brightness)
   {
     currentBrightness = 0;
     Serial.write(0x00); // Brightness Command 0%
+  }
+  if (currentBrightness != 0)
+  {
+    lastBrightness = currentBrightness;
   }
   delayMicroseconds(dispDelay); // Delay between commands
 }
@@ -107,9 +121,9 @@ void fillCarrots()
 String previousMessage;
 void updateDisplay(String displayMessage)
 {
-  if (displayMessage.length() >= 40) // If the message is too long, truncate it
+  if (displayMessage.length() >= 41) // If the message is too long, truncate it
   {
-    displayMessage = displayMessage.substring(0, 39);
+    displayMessage = displayMessage.substring(0, 40);
   }
 
   // Compare diffrences in messages and display only the difference
@@ -140,44 +154,91 @@ void clearDisplay()
 
 void displayTime()
 {
-  updateDisplay(myTZ.dateTime("l   M Y A h:i:s.v"));
+  String aLeft = myTZ.dateTime("l M d");       // Day Month Date - Length varies
+  String aRight = myTZ.dateTime("Y");          // Year - Length 4
+  String bLeft = "";                           // Nothing for now, using to center time
+  String bRight = myTZ.dateTime("h:i:s.v  A"); // HH:MM:SS.MMM - Length 16
+
+  // Aline Date Left and Year right on a line
+  for (int i = aLeft.length(); i < 16; i++)
+  {
+    aLeft = aLeft + " ";
+  }
+  for (int i = bLeft.length(); i < 4; i++) // Center time on b line
+  {
+    bLeft = bLeft + " ";
+  }
+
+  // Burnin compenstation AM PM swap display bRight.substring(14, 15).equals("AM") todo? crashes when no time ready?
+  if(true)
+  {
+    updateDisplay(aLeft + aRight + bLeft + bRight);
+  }
+  else
+  {
+    updateDisplay(bLeft + bRight + aLeft + aRight);
+  }
+}
+
+int carrotPosition = 0;
+bool increasing = true;
+void carrotScanner()
+{
+  // Set one of the carrots to true in a scanning pattern
+  if (increasing)
+  {
+    carrots[carrotPosition] = false;
+    carrotPosition++;
+    carrots[carrotPosition] = true;
+    if (carrotPosition == 19)
+    {
+      increasing = false;
+    }
+  }
+  else
+  {
+    carrots[carrotPosition] = false;
+    carrotPosition--;
+    carrots[carrotPosition] = true;
+    if (carrotPosition == 0)
+    {
+      increasing = true;
+    }
+  }
+  updateCarrots();
 }
 
 // MQTT Handler
 void messageReceivedMQTT(String &topic, String &payload)
 {
   // Parse Topic
-  if (topic.equals(HOSTNAME + "/status"))
+  if (topic.equals(HOSTNAME + "/light/status"))
   {
-    client.publish(HOSTNAME + "/status", "1");
+    client.publish(HOSTNAME + "/light/status", "1");
   }
-  else if (topic.equals(HOSTNAME + "/relay/0/set"))
+  else if (topic.equals(HOSTNAME + "/light/switch"))
   {
-    if (payload.equals("1"))
+    if (payload.equals("ON"))
+    {
+      setBrightness(lastBrightness);
+      client.publish(HOSTNAME + "/light/status", "ON");
+    }
+    else if (payload.equals("OFF"))
     {
       setBrightness(0);
-      client.publish(HOSTNAME + "/relay/0", "1");
-    }
-    else if (payload.equals("0"))
-    {
-      setBrightness(100);
-      client.publish(HOSTNAME + "/relay/0", "0");
-    }
-    else if (payload.equals("1"))
-    {
-      client.publish(HOSTNAME + "/relay/0", "1");
+      client.publish(HOSTNAME + "/light/status", "OFF");
     }
   }
-  else if (topic.equals(HOSTNAME + "/brightness/set"))
+  else if (topic.equals(HOSTNAME + "/light/brightness/set"))
   {
     int brightness = payload.toInt();
-    setBrightness(brightness);
-    client.publish("Panel-Badge/brightness", String(currentBrightness));
+    setBrightness(map(brightness, 0, 255, 0, 100));
+    client.publish(HOSTNAME + "/light/brightness", String(map(currentBrightness, 0, 100, 0, 255)));
   }
 }
 
 boolean mqttSetup = 0;
-char mqttHost[20];
+char mqttHost[120];
 void handleMQTT()
 {
   if (MQTT_ENABLED)
@@ -201,19 +262,14 @@ void handleMQTT()
             return;
           }
         }
-        Serial.println("Connected!");
 
         // Publish Current Status before Subscribing
-        client.publish(HOSTNAME + "/status", "1");
-        if (currentBrightness > 0)
-        {
-          client.publish(HOSTNAME + "/relay/0", "1");
-        }
-        client.publish(HOSTNAME + "/brightness", String(currentBrightness));
+        client.publish(HOSTNAME + "/light/status", "ON");
+        client.publish(HOSTNAME + "/light/brightness", String(map(currentBrightness, 0, 100, 0, 255)));
 
         client.subscribe(HOSTNAME + "/status");
-        client.subscribe(HOSTNAME + "/relay/0/set");
-        client.subscribe(HOSTNAME + "/brightness/set");
+        client.subscribe(HOSTNAME + "/light/switch");
+        client.subscribe(HOSTNAME + "/light/brightness/set");
 
         client.publish(HOSTNAME, HOSTNAME + " online!");
         mqttSetup = true;
@@ -245,7 +301,7 @@ void setup()
   delay(100); // Start delay
 
   clearDisplay();
-  setBrightness(40);
+  setBrightness(20);
 
   // Start String
   String startString = ("VF-ESP    FW: " + VERSION + "WiFi: " + SSID);
@@ -337,4 +393,5 @@ void loop()
 {
   yieldBackground();
   displayTime();
+  carrotScanner();
 }
